@@ -1,0 +1,400 @@
+<!doctype html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Simulasi Penumpukan Box di Pallet</title>
+<style>
+:root{--bg:#e6e2d9;--panel:#fbfaf7;--ink:#2a2622;--muted:#6d675d;--line:#d6d0c4;--accent:#b8480f;--accent-ink:#fff;
+box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#1c1b19;--panel:#262421;--ink:#ece8df;--muted:#9d978b;--line:#3a3732;--accent:#e0733a;--accent-ink:#1c1b19}}
+:root[data-theme="dark"]{--bg:#1c1b19;--panel:#262421;--ink:#ece8df;--muted:#9d978b;--line:#3a3732;--accent:#e0733a;--accent-ink:#1c1b19}
+*,*::before,*::after{box-sizing:inherit}
+html,body{height:100%;margin:0}
+body{background:var(--bg);color:var(--ink);font:15px/1.5 "Trebuchet MS","Segoe UI",system-ui,sans-serif;display:flex;flex-direction:column;overflow:hidden}
+@media (min-width:820px){body{flex-direction:row}}
+#stage{position:relative;flex:1;min-height:0;min-width:0}
+#stage canvas{display:block;width:100%;height:100%}
+#toast{position:absolute;left:50%;bottom:14px;transform:translateX(-50%);background:var(--panel);color:var(--ink);border:1px solid var(--line);padding:6px 14px;border-radius:6px;font-size:14px;opacity:0;transition:opacity .2s;pointer-events:none;white-space:nowrap}
+#toast.on{opacity:1}
+aside{background:var(--panel);border-top:1px solid var(--line);padding:14px 16px;overflow-y:auto;max-height:48%}
+@media (min-width:820px){aside{width:310px;max-height:none;border-top:0;border-left:1px solid var(--line);padding:20px}}
+h1{font-size:19px;line-height:1.25;margin:0 0 4px;font-weight:700}
+.sub{margin:0 0 14px;color:var(--muted);font-size:13px}
+label{display:block;font-size:13px;color:var(--muted);margin:10px 0 4px}
+input[type=range]{width:100%}
+.chk{display:flex;gap:8px;align-items:center;color:var(--ink);font-size:14px;margin-top:12px}
+select{width:100%;padding:7px 8px;border:1px solid var(--line);background:var(--bg);color:var(--ink);border-radius:5px;font:inherit}
+.row{display:flex;gap:8px;margin-top:12px;flex-wrap:wrap}
+button{font:inherit;padding:8px 12px;border-radius:5px;border:1px solid var(--line);background:var(--bg);color:var(--ink);cursor:pointer}
+button.main{background:var(--accent);color:var(--accent-ink);border-color:var(--accent);font-weight:700}
+button:hover{filter:brightness(1.07)}
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.stats{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-top:16px;padding-top:14px;border-top:1px solid var(--line)}
+.stats b{display:block;font-size:20px;line-height:1.2}
+.stats span{font-size:12px;color:var(--muted)}
+.bar{height:6px;background:var(--line);border-radius:3px;margin-top:12px;overflow:hidden}
+.bar i{display:block;height:100%;width:0;background:var(--accent);transition:width .3s}
+.hint{margin-top:14px;font-size:12px;color:var(--muted)}
+</style>
+</head>
+<body>
+<div id="stage"><div id="toast"></div></div>
+<aside>
+  <h1>Penumpukan box di pallet</h1>
+  <p class="sub" id="desc"></p>
+
+  <label for="pal">Model pallet</label>
+  <select id="pal">
+    <option value="p110">110 × 110 cm</option>
+    <option value="p120">110 × 120 cm</option>
+    <option value="p50">110 × 50 cm</option>
+    <option value="p100">100 × 75 cm</option>
+    <option value="p150">150 × 75 cm</option>
+    <option value="p200">200 × 75 cm</option>
+  </select>
+
+  <label for="maxl">Batas layer per pallet: <span id="maxlv">12</span> (<span id="maxcm">132</span> cm)</label>
+  <input id="maxl" type="range" min="1" max="12" step="1" value="12">
+
+
+  <div class="row">
+    <button class="main" id="add1">Tambah box</button>
+    <button id="addL">Tambah 1 layer</button>
+    <button id="addP">Isi pallet penuh</button>
+    <button id="undo">Hapus terakhir</button>
+    <button id="undoL">Hapus 1 layer</button>
+    <button id="clear">Kosongkan</button>
+  </div>
+
+  <div class="stats">
+    <div><b id="sCount">0</b><span>box</span></div>
+    <div><b id="sPal">0</b><span>layer terisi</span></div>
+    <div><b id="sHigh">0</b><span>tinggi box (cm)</span></div>
+  </div>
+  <div class="bar"><i id="barFill"></i></div>
+  <p class="hint" id="sUtil">Kapasitas terpakai: 0%</p>
+  <p class="hint">Geser untuk memutar, cubit atau scroll untuk zoom.</p>
+</aside>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+<script>
+(function () {
+  // Satuan: meter
+  var PAL = 1.1, BW = 0.55, BD = 0.275, BH = 0.11, PH = 0.12, G = 0.006;
+  var PCOLS = 1, PROWS = 1, SP = 1.6, PER_LAYER = 8;
+  var $ = function (id) { return document.getElementById(id); };
+
+  // Layer ganjil (1, 3, 5, ...): 2 tegak di kiri, 4 melintang di tengah, 2 tegak di kanan
+  var SLOTS_ODD = [
+    [-0.4125, -0.275, 'v'], [-0.4125, 0.275, 'v'],
+    [0, -0.4125, 'h'], [0, -0.1375, 'h'], [0, 0.1375, 'h'], [0, 0.4125, 'h'],
+    [0.4125, -0.275, 'v'], [0.4125, 0.275, 'v']
+  ];
+  // Layer genap (2, 4, 6, ...): 2 melintang di atas, 4 tegak di tengah, 2 melintang di bawah
+  var SLOTS_EVEN = [
+    [-0.275, -0.4125, 'h'], [0.275, -0.4125, 'h'],
+    [-0.4125, 0, 'v'], [-0.1375, 0, 'v'], [0.1375, 0, 'v'], [0.4125, 0, 'v'],
+    [-0.275, 0.4125, 'h'], [0.275, 0.4125, 'h']
+  ];
+
+  var stage = $('stage');
+  var renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+  renderer.shadowMap.enabled = true;
+  stage.appendChild(renderer.domElement);
+
+  var scene = new THREE.Scene();
+  var camera = new THREE.PerspectiveCamera(45, 1, 0.1, 100);
+  camera.position.set(2.4, 2.0, 2.8);
+  var controls = new THREE.OrbitControls(camera, renderer.domElement);
+  controls.target.set(0, 0.65, 0);
+  controls.enableDamping = true;
+  controls.maxPolarAngle = Math.PI * 0.49;
+  controls.minDistance = 1.2;
+  controls.maxDistance = 12;
+
+  scene.add(new THREE.HemisphereLight(0xffffff, 0x8a8478, 0.75));
+  var sun = new THREE.DirectionalLight(0xffffff, 0.85);
+  sun.position.set(6, 12, 5);
+  sun.castShadow = true;
+  sun.shadow.mapSize.set(2048, 2048);
+  var sc = sun.shadow.camera;
+  sc.left = -3; sc.right = 3; sc.top = 3; sc.bottom = -3; sc.near = 1; sc.far = 35;
+  scene.add(sun);
+
+  // Lantai & dinding
+  var W = 4, D = 4;
+  var floor = new THREE.Mesh(new THREE.PlaneGeometry(W, D),
+    new THREE.MeshStandardMaterial({ color: 0x9c978d, roughness: 0.95 }));
+  floor.rotation.x = -Math.PI / 2;
+  floor.receiveShadow = true;
+  scene.add(floor);
+
+  // Pallet
+  var woodMat = new THREE.MeshStandardMaterial({ color: 0xb08a55, roughness: 0.9 });
+  var lineMat = new THREE.LineBasicMaterial({ color: 0xe0b020 });
+
+  // Model pallet 110 x 120: 2 melintang di atas, lalu 2 baris 4 tegak (selebar 110 x 137,5 cm)
+  var SLOTS_C_ODD = [
+    [-0.275, -0.55, 'h'], [0.275, -0.55, 'h'],
+    [-0.4125, -0.1375, 'v'], [-0.1375, -0.1375, 'v'], [0.1375, -0.1375, 'v'], [0.4125, -0.1375, 'v'],
+    [-0.4125, 0.4125, 'v'], [-0.1375, 0.4125, 'v'], [0.1375, 0.4125, 'v'], [0.4125, 0.4125, 'v']
+  ];
+  // Layer genap: pola yang sama diputar 180 derajat
+  var SLOTS_C_EVEN = SLOTS_C_ODD.map(function (s) { return [-s[0], -s[1], s[2]]; });
+  // Model pallet 110 x 50: layer ganjil 2 x 2 box melintang, layer genap 4 box tegak berjajar (110 x 55 cm)
+  var SLOTS_D_ODD = [
+    [-0.275, -0.1375, 'h'], [0.275, -0.1375, 'h'],
+    [-0.275, 0.1375, 'h'], [0.275, 0.1375, 'h']
+  ];
+  var SLOTS_D_EVEN = [
+    [-0.4125, 0, 'v'], [-0.1375, 0, 'v'], [0.1375, 0, 'v'], [0.4125, 0, 'v']
+  ];
+  // Pola pallet 100/150/200 x 75 (box 50 x 25): n melintang di atas, 2n tegak di bawah
+  function makePattern(n, bw, bd) {
+    var s = [], dz = (bd + bw) / 2, i;
+    for (i = 0; i < n; i++) s.push([(i - (n - 1) / 2) * bw, -dz + bd / 2, 'h']);
+    for (i = 0; i < 2 * n; i++) s.push([(i - (2 * n - 1) / 2) * bd, dz - bw / 2, 'v']);
+    return s;
+  }
+  function rot180(s) { return s.map(function (a) { return [-a[0], -a[1], a[2]]; }); }
+  var PAT_100 = makePattern(2, 0.5, 0.25), PAT_150 = makePattern(3, 0.5, 0.25), PAT_200 = makePattern(4, 0.5, 0.25);
+  var MODELS = {
+    p110: { depth: 1.1, odd: SLOTS_ODD, even: SLOTS_EVEN },
+    p120: { depth: 1.375, odd: SLOTS_C_ODD, even: SLOTS_C_EVEN },
+    p50: { depth: 0.55, odd: SLOTS_D_ODD, even: SLOTS_D_EVEN },
+    p100: { width: 1.0, depth: 0.75, bw: 0.5, bd: 0.25, odd: PAT_100, even: rot180(PAT_100) },
+    p150: { width: 1.5, depth: 0.75, bw: 0.5, bd: 0.25, odd: PAT_150, even: rot180(PAT_150) },
+    p200: { width: 2.0, depth: 0.75, bw: 0.5, bd: 0.25, odd: PAT_200, even: rot180(PAT_200) }
+  };
+  var model = MODELS.p110;
+  var pallets = [{ x: 0, z: 0, n: 0 }];
+  var palletObjs = [];
+
+  function buildPallet() {
+    palletObjs.forEach(function (o) { scene.remove(o); });
+    palletObjs = [];
+    var dep = model.depth, wid = model.width || PAL;
+    var pg = new THREE.Group();
+    var deck = new THREE.Mesh(new THREE.BoxGeometry(wid, 0.022, dep), woodMat);
+    deck.position.y = PH - 0.011; deck.castShadow = true; deck.receiveShadow = true;
+    pg.add(deck);
+    var runGeo = new THREE.BoxGeometry(0.09, PH - 0.022, dep);
+    [-(wid / 2 - 0.05), 0, wid / 2 - 0.05].forEach(function (x) {
+      var run = new THREE.Mesh(runGeo, woodMat);
+      run.position.set(x, (PH - 0.022) / 2, 0); run.castShadow = true;
+      pg.add(run);
+    });
+    scene.add(pg); palletObjs.push(pg);
+    var sx = wid / 2 + 0.06, sz = dep / 2 + 0.06, y = 0.012;
+    var lp = [-sx, y, -sz, sx, y, -sz, sx, y, -sz, sx, y, sz, sx, y, sz, -sx, y, sz, -sx, y, sz, -sx, y, -sz];
+    var lg = new THREE.BufferGeometry();
+    lg.setAttribute('position', new THREE.Float32BufferAttribute(lp, 3));
+    var ls = new THREE.LineSegments(lg, lineMat);
+    scene.add(ls); palletObjs.push(ls);
+  }
+  buildPallet();
+
+  // Geometri & material box (dipakai bersama)
+  var geoH, geoV, edgeH, edgeV;
+  function setBox(bw, bd) {
+    BW = bw; BD = bd;
+    [geoH, geoV, edgeH, edgeV].forEach(function (g) { if (g) g.dispose(); });
+    geoH = new THREE.BoxGeometry(BW - G, BH - G, BD - G);
+    geoV = new THREE.BoxGeometry(BD - G, BH - G, BW - G);
+    edgeH = new THREE.EdgesGeometry(geoH); edgeV = new THREE.EdgesGeometry(geoV);
+  }
+  setBox(0.55, 0.275);
+  var edgeMat = new THREE.LineBasicMaterial({ color: 0x4a3720, transparent: true, opacity: 0.5 });
+  var boxMats = [0xd0a874, 0xc79d66, 0xbf935c].map(function (c) {
+    return new THREE.MeshStandardMaterial({ color: c, roughness: 0.85 });
+  });
+
+  // Label "Koli N" di sisi atas dan keempat sisi samping box
+  var LBL = 0.0008;
+  var gTop = new THREE.PlaneGeometry(0.46, 0.23);
+  var gLong = new THREE.PlaneGeometry(0.46, 0.072);
+  var gShort = new THREE.PlaneGeometry(0.23, 0.072);
+  var FONT = '"Trebuchet MS", "Segoe UI", sans-serif';
+
+  function labelTex(text, w, h) {
+    var cv = document.createElement('canvas');
+    cv.width = w; cv.height = h;
+    var cx = cv.getContext('2d');
+    var lw = Math.max(2, h * 0.04);
+    cx.clearRect(0, 0, w, h);
+    cx.font = 'bold 100px ' + FONT;
+    var k = Math.min(w * 0.86 / cx.measureText(text).width, h * 0.62 / 100);
+    cx.font = 'bold ' + Math.round(100 * k) + 'px ' + FONT;
+    cx.fillStyle = '#26231f'; cx.textAlign = 'center'; cx.textBaseline = 'middle';
+    cx.fillText(text, w / 2, h / 2 + h * 0.03);
+    var t = new THREE.CanvasTexture(cv);
+    t.anisotropy = 4;
+    return t;
+  }
+
+  function addLabels(mesh, o, n) {
+    var text = 'Koli ' + n, k = BW / 0.55;
+    var hx = (o === 'h' ? BW : BD) / 2 - G / 2, hz = (o === 'h' ? BD : BW) / 2 - G / 2, hy = (BH - G) / 2;
+    var tTop = labelTex(text, 256, 128), tLong = labelTex(text, 512, 80), tShort = labelTex(text, 256, 80);
+    function plane(geo, tex, px, py, pz, rx, ry, rz) {
+      var m = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ map: tex, roughness: 0.9, transparent: true, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -1 }));
+      m.position.set(px, py, pz); m.rotation.set(rx, ry, rz); m.scale.set(k, k, 1);
+      mesh.add(m);
+    }
+    plane(gTop, tTop, 0, hy + LBL, 0, -Math.PI / 2, 0, o === 'h' ? 0 : -Math.PI / 2);
+    var zg = o === 'h' ? gLong : gShort, zt = o === 'h' ? tLong : tShort;
+    var xg = o === 'h' ? gShort : gLong, xt = o === 'h' ? tShort : tLong;
+    plane(zg, zt, 0, 0, hz + LBL, 0, 0, 0);
+    plane(zg, zt, 0, 0, -hz - LBL, 0, Math.PI, 0);
+    plane(xg, xt, hx + LBL, 0, 0, 0, Math.PI / 2, 0);
+    plane(xg, xt, -hx - LBL, 0, 0, 0, -Math.PI / 2, 0);
+  }
+
+  function disposeBox(obj) {
+    obj.children.forEach(function (c) {
+      if (c.material && c.material.map) { c.material.map.dispose(); c.material.dispose(); }
+    });
+  }
+
+  var history = [], anims = [];
+
+  function maxLayers() { return parseInt($('maxl').value, 10); }
+
+  function addBox() {
+    var cap = maxLayers() * PER_LAYER, p = -1;
+    for (var i = 0; i < pallets.length; i++) if (pallets[i].n < cap) { p = i; break; }
+    if (p < 0) { toast('Pallet sudah penuh'); return false; }
+    var pl = pallets[p], layer = Math.floor(pl.n / PER_LAYER);
+    var slot = (layer % 2 === 0 ? model.odd : model.even)[pl.n % PER_LAYER];
+    var x = slot[0], z = slot[1], o = slot[2];
+    var mesh = new THREE.Mesh(o === 'h' ? geoH : geoV, boxMats[(layer + pl.n) % 3]);
+    mesh.add(new THREE.LineSegments(o === 'h' ? edgeH : edgeV, edgeMat));
+    mesh.castShadow = true; mesh.receiveShadow = true;
+    addLabels(mesh, o, history.length + 1);
+    var ty = PH + layer * BH + BH / 2;
+    mesh.position.set(pl.x + x, ty + 3, pl.z + z);
+    scene.add(mesh);
+    anims.push({ obj: mesh, target: ty, v: 0 });
+    pl.n++;
+    history.push({ obj: mesh, p: p });
+    updateStats();
+    return true;
+  }
+
+  function runN(n, delay) {
+    var k = 0;
+    (function step() { if (k++ < n && addBox()) setTimeout(step, delay); })();
+  }
+
+  function undo() {
+    var last = history.pop();
+    if (!last) return;
+    scene.remove(last.obj); disposeBox(last.obj);
+    anims = anims.filter(function (a) { return a.obj !== last.obj; });
+    pallets[last.p].n--;
+    updateStats();
+  }
+
+  function clearAll() {
+    history.forEach(function (b) { scene.remove(b.obj); disposeBox(b.obj); });
+    history = []; anims = [];
+    pallets.forEach(function (p) { p.n = 0; });
+    updateStats();
+  }
+
+  function toast(msg) {
+    var el = $('toast');
+    el.textContent = msg; el.classList.add('on');
+    clearTimeout(toast.t);
+    toast.t = setTimeout(function () { el.classList.remove('on'); }, 1800);
+  }
+
+  function updateStats() {
+    var used = 0, hi = 0;
+    pallets.forEach(function (p) {
+      if (p.n > 0) used++;
+      var l = Math.ceil(p.n / PER_LAYER);
+      if (l > hi) hi = l;
+    });
+    var util = history.length / (pallets.length * maxLayers() * PER_LAYER) * 100;
+    $('sCount').textContent = history.length;
+    $('sPal').textContent = hi + ' / ' + maxLayers();
+    $('sHigh').textContent = Math.round(hi * BH * 100);
+    $('barFill').style.width = Math.min(util, 100) + '%';
+    $('sUtil').textContent = 'Kapasitas terpakai: ' + Math.round(util) + '%';
+  }
+
+  $('add1').onclick = addBox;
+  $('addL').onclick = function () { runN(PER_LAYER, 90); };
+  $('addP').onclick = function () { runN(PER_LAYER * maxLayers() - pallets[0].n, 30); };
+  var DESC = {
+    p110: 'Pallet 110 × 110 cm, 8 box per layer (55 × 27,5 × 11 cm). Layer ganjil: 2 box tegak di tiap sisi dan 4 box melintang di tengah. Layer genap: 2 box melintang di atas dan bawah, 4 box tegak di tengah.',
+    p120: 'Pallet model 110 × 120, 10 box per layer (55 × 27,5 × 11 cm). Layer ganjil: 2 box melintang di atas, lalu 2 baris berisi 4 box tegak. Layer genap: pola yang sama diputar 180°. Tampilan pallet dibuat sama luas dengan susunan box (110 × 137,5 cm).',
+    p50: 'Pallet model 110 × 50, 4 box per layer (55 × 27,5 × 11 cm). Layer ganjil: 2 baris × 2 box melintang. Layer genap: 4 box tegak berjajar. Tampilan pallet dibuat sama luas dengan susunan box (110 × 55 cm).',
+    p100: 'Pallet 100 × 75 cm, 6 box per layer (50 × 25 × 11 cm). Layer ganjil: 2 box melintang di atas dan 4 box tegak di bawah. Layer genap: pola yang sama diputar 180°.',
+    p150: 'Pallet 150 × 75 cm, 9 box per layer (50 × 25 × 11 cm). Layer ganjil: 3 box melintang di atas dan 6 box tegak di bawah. Layer genap: pola yang sama diputar 180°.',
+    p200: 'Pallet 200 × 75 cm, 12 box per layer (50 × 25 × 11 cm). Layer ganjil: 4 box melintang di atas dan 8 box tegak di bawah. Layer genap: pola yang sama diputar 180°.'
+  };
+  function setDesc() { $('desc').textContent = DESC[$('pal').value]; }
+  $('pal').onchange = function () {
+    clearAll();
+    model = MODELS[this.value];
+    PER_LAYER = model.odd.length;
+    setBox(model.bw || 0.55, model.bd || 0.275);
+    var f = Math.max(1, Math.max(model.width || PAL, model.depth) / 1.2);
+    camera.position.set(2.4 * f, 2.0 * f, 2.8 * f);
+    buildPallet();
+    setDesc();
+    updateStats();
+    runN(PER_LAYER * 2, 60);
+  };
+  setDesc();
+  $('undoL').onclick = function () {
+    if (!history.length) { toast('Belum ada box'); return; }
+    var n = pallets[history[history.length - 1].p].n;
+    var k = (n % PER_LAYER) || PER_LAYER;
+    for (var i = 0; i < k; i++) undo();
+  };
+  $('undo').onclick = undo;
+  $('clear').onclick = clearAll;
+  $('maxl').oninput = function () {
+    var n = parseInt(this.value, 10);
+    $('maxlv').textContent = n;
+    $('maxcm').textContent = Math.round(n * BH * 100);
+    updateStats();
+  };
+
+  function resize() {
+    var w = stage.clientWidth, h = stage.clientHeight;
+    if (!w || !h) return;
+    renderer.setSize(w, h, false);
+    camera.aspect = w / h;
+    camera.updateProjectionMatrix();
+  }
+  if (window.ResizeObserver) new ResizeObserver(resize).observe(stage);
+  window.addEventListener('resize', resize);
+  resize();
+
+  var reduce = window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches;
+  function loop() {
+    requestAnimationFrame(loop);
+    for (var i = anims.length - 1; i >= 0; i--) {
+      var a = anims[i];
+      if (reduce) { a.obj.position.y = a.target; anims.splice(i, 1); continue; }
+      a.v += 0.012;
+      a.obj.position.y -= a.v;
+      if (a.obj.position.y <= a.target) { a.obj.position.y = a.target; anims.splice(i, 1); }
+    }
+    controls.update();
+    renderer.render(scene, camera);
+  }
+  loop();
+
+  runN(PER_LAYER * 3, 60);
+})();
+</script>
+</body>
+</html>
